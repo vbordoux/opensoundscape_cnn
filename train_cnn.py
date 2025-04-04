@@ -12,7 +12,8 @@ from opensoundscape import AudioFileDataset
 from pathlib import Path
 from sklearn.metrics import roc_auc_score, f1_score, precision_score, recall_score, precision_recall_curve, auc
 from sklearn.model_selection import StratifiedKFold
-
+import tensorflow as tf #TF needed to import pickle
+import gc
 
 def create_train_valid_set(experiment_name, samples_dir, fish_sound, fish_sound_folder, window_len_s):
     
@@ -52,7 +53,7 @@ def create_train_valid_set(experiment_name, samples_dir, fish_sound, fish_sound_
 
 
 
-def create_test_set(test_files_path, fish_sound):
+def create_test_set_with_opensoundscape(test_files_path, fish_sound):
     
     test_files_list = os.listdir(test_files_path)
 
@@ -86,6 +87,21 @@ def create_test_set(test_files_path, fish_sound):
 
 
 
+def load_test_set(test_set_path, test_files_path, fish_sound):
+    # tensorflow is needed to import the pickle because it contains tensors
+    test_set_df = pd.read_pickle(os.path.join(test_set_path, 'test_set.pkl'))
+    
+    # Modify the format of the pickle to be compatible with opensoundscape
+    test_set_df = test_set_df.drop(columns=['Label', 'Embedding'])
+    test_set_df = test_set_df.rename(columns={'label_int': fish_sound, 'Starttime': 'start_time', 'Endtime': 'end_time', 'filename': 'file'})
+    test_set_df[fish_sound] = test_set_df[fish_sound].astype(bool)
+    test_set_df['file'] = test_files_path + test_set_df['file']
+    test_set_df = test_set_df.set_index(['file', 'start_time', 'end_time'])
+
+    return test_set_df
+
+
+
 def setup_model(model, sample_rate):
     # all data augmentations
     model.preprocessor.pipeline.random_trim_audio.bypass = True
@@ -112,37 +128,44 @@ def setup_model(model, sample_rate):
                                             # scaling = 'spectrum'
                                             )
 
+
+
 def compute_metrics(y_true, y_pred, fish_sound):
-    # Compute precision from logits and labels
-    valid_labels = y_true[fish_sound].values
-    valid_pred = y_pred[fish_sound].values.round() #Threshold = 0.5
-
-    precision_valid = precision_score(valid_labels, valid_pred, pos_label=1, average='binary')
-    recall_valid = recall_score(valid_labels, valid_pred, pos_label=1, average='binary')
-    f1_valid = f1_score(valid_labels, valid_pred, pos_label=1, average='binary')
-    auc_roc_valid = roc_auc_score(valid_labels, y_pred[fish_sound].values)
-    precision, recall, _thresholds = precision_recall_curve(valid_labels, y_pred[fish_sound].values)
-    auc_precision_recall_valid = auc(recall, precision)
-
-    return precision_valid, recall_valid, f1_valid, auc_roc_valid, auc_precision_recall_valid
+    # Extract target values
+    true_labels = y_true[fish_sound].values
+    pred_probs = y_pred[fish_sound].values
+    pred_binary = pred_probs.round()  # Threshold = 0.5
+    
+    # Calculate metrics
+    precision = precision_score(true_labels, pred_binary, pos_label=1, average='binary')
+    recall = recall_score(true_labels, pred_binary, pos_label=1, average='binary')
+    f1 = f1_score(true_labels, pred_binary, pos_label=1, average='binary')
+    auc_roc = roc_auc_score(true_labels, pred_probs)
+    precision_curve, recall_curve, _ = precision_recall_curve(true_labels, pred_probs)
+    auc_pr = auc(recall_curve, precision_curve)
+    
+    # Return metrics as a dictionary for better access
+    return precision, recall, f1, auc_roc, auc_pr
 
 
 
 if __name__ == "__main__":
+    seed = 0
+    torch.manual_seed(seed)
+    random.seed(seed)
+    np.random.seed(seed)
 
-    torch.manual_seed(42)
-    random.seed(42)
-    np.random.seed(42)
-
-    # Hard coded params for now
+    # Hard coded params for now - If properly given here, the rest of the code should run
     # TODO get them from the dict config eventually
     fish_sound = 'A'
     fish_sound_folder = 'fishA'
     window_len_s = 5.0
+    sample_rate = 32000
     experiment_name = 'texel_baseline_20250331'
     samples_dir = '/home/reindert/Valentin_REVO/surfperch_toshare/eval_texel Outputs/september 2024/surfperch/labeled_outputs/'
-    test_files_path = '/home/reindert/Valentin_REVO/surfperch_toshare/eval_texel Data/september 2024/test_set/'
-    
+    testset_files_dir = '/home/reindert/Valentin_REVO/surfperch_toshare/eval_texel Data/september 2024/test_set/'
+    testset_pickle_dir = '/home/reindert/Valentin_REVO/surfperch_toshare/eval_texel Outputs/september 2024/surfperch/test_set/'
+
     # WANDB
     activate_wandb = False
     wandb_exp_name = 'No augment no upsampling 030425'
@@ -150,8 +173,7 @@ if __name__ == "__main__":
     # RUN PARAMS
     nbr_epochs = 50
     batch_size = 8
-    num_workers = 16
-
+    num_workers = 8
 
     if activate_wandb:
         try:
@@ -167,22 +189,24 @@ if __name__ == "__main__":
     else: 
         wandb_session = None
 
+    # NOT USED anymore - Create test set with opensoundscape - can be used to compare perf of both test set
+    # test_set_df = create_test_set_with_opensoundscape(testset_files_dir, fish_sound)
 
     # Load test set
-    test_set_df = create_test_set(test_files_path, fish_sound)
+    test_set_df = load_test_set(testset_pickle_dir, testset_files_dir, fish_sound)
 
-    # Duplicate of cell bellow to compute different metrics
-    validation_metrics_dic = {}
-    testset_metrics_dic = {}
-
-    seed = 0
+    # Create the 5-fold training and validation sets
     kf = StratifiedKFold(n_splits=5, shuffle=True, random_state=seed)
     df_trainset = create_train_valid_set(experiment_name, samples_dir, fish_sound, fish_sound_folder, window_len_s)
+    validation_metrics_dic = {}
+    testset_metrics_dic = {}
 
     # Iterate over the folds
     for i, (train_index, valid_index) in enumerate(kf.split(df_trainset, df_trainset[fish_sound])):
         
+        print("\n\n----------------------------------------")
         print(f"Running experiment for Fold {i+1}/5")
+        print("----------------------------------------")
 
         train_df, valid_df = df_trainset.iloc[train_index], df_trainset.iloc[valid_index]
 
@@ -196,10 +220,8 @@ if __name__ == "__main__":
         model = CNN(architecture=architecture,
                     classes=class_list,
                     sample_duration=5.0)
+        # print(f"model.device is {model.device}")
 
-        print(f"model.device is {model.device}")
-
-        sample_rate = 32000
         setup_model(model, sample_rate)
 
         # TODO - Fix overlay
@@ -224,14 +246,27 @@ if __name__ == "__main__":
             batch_size=batch_size,
             num_workers=num_workers,
             wandb_session=wandb_session,
-            save_interval=5,  
-            save_path=checkpoint_folder,  
-            progress_bar=True
+            progress_bar=True,
+            save_interval=5,  # save checkpoint every 10 epochs
+            save_path=checkpoint_folder,  # location to save checkpoints
         )
 
+        # Load the best model - I think otherwise the model at the end of the training is used, which likely overfit data
+        model.load("./model_training_checkpoints/best.model")
+
         # Run predictions on the validation set and on the test set
-        predict_validset = model.predict(valid_df, batch_size=batch_size, num_workers=num_workers, activation_layer='sigmoid', wandb_session=wandb_session)
-        pred_testset = model.predict(test_set_df, batch_size=batch_size, num_workers=num_workers, activation_layer='sigmoid', wandb_session=wandb_session)
+        predict_validset = model.predict(valid_df,
+                                        batch_size=batch_size, 
+                                        num_workers=num_workers, 
+                                        activation_layer='sigmoid', 
+                                        wandb_session=wandb_session,
+                                        progress_bar=False)
+        
+        pred_testset = model.predict(test_set_df, 
+                                     batch_size=batch_size, 
+                                     num_workers=num_workers, 
+                                     activation_layer='sigmoid', 
+                                     wandb_session=wandb_session)
 
         # Compute metrics
         prec_valid, recall_valid, f1_valid, auc_roc_valid, auc_pr_valid = compute_metrics(valid_df, predict_validset, fish_sound)
@@ -240,6 +275,12 @@ if __name__ == "__main__":
         # Save metrics of the fold iteration
         validation_metrics_dic[i] = [prec_valid, recall_valid, f1_valid, auc_roc_valid, auc_pr_valid]
         testset_metrics_dic[i] = [prec_test, recall_test, f1_test, auc_roc_test, auc_pr_test]
+
+        # Clean cuda memory to avoid OOM
+        model.to('cpu')
+        del model
+        gc.collect()
+        torch.cuda.empty_cache()
 
     # Compute average of all metrics across all folds
     prec_valid = np.mean([metrics[0] for metrics in validation_metrics_dic.values()])
@@ -285,6 +326,7 @@ if __name__ == "__main__":
     # create results dir
     Path("./results").mkdir(parents=True, exist_ok=True)
     metrics_df.to_csv(f"./results/{experiment_name}_metrics.csv", index=False)
+    print(f"Results saved in ./results/{experiment_name}_metrics.csv")
     
     # Finish the session before next run
     if activate_wandb:
@@ -293,18 +335,31 @@ if __name__ == "__main__":
 
 # Perf on last run
 '''
-Texel data - no augmentation - no upsampling
-Validation Set
-Precision valid:  0.9578296703296705
-Recall valid:  0.8800000000000001
-F1 valid:  0.9151685294065718
-AUC ROC valid:  0.9573333333333334
-AUC precision recall:  0.9653796326824191
+Precision valid:  0.9046428571428571
+Recall valid:  0.8933333333333333
+F1 valid:  0.8983759733036708
+AUC ROC valid:  0.9600000000000002
+AUC precision recall:  0.96385885468161
 
 Test Set
-Precision test:  0.2825814303730681
-Recall test:  0.7183673469387756
-F1 test:  0.36321974537253954
-AUC ROC test:  0.9159642707271747
-AUC precision recall:  0.5226434867971157
+Precision test:  0.27824239520204075
+Recall test:  0.7208333333333333
+F1 test:  0.38541352754615216
+AUC ROC test:  0.9218473193473194
+AUC precision recall:  0.5563509980096927
+
+
+Validation Set
+Precision valid:  0.913809523809524
+Recall valid:  0.8400000000000001
+F1 valid:  0.8742273307790549
+AUC ROC valid:  0.9546666666666667
+AUC precision recall:  0.9563074305868422
+
+Test Set
+Precision test:  0.336829340026271
+Recall test:  0.6833333333333333
+F1 test:  0.4403030066859854
+AUC ROC test:  0.9174854312354311
+AUC precision recall:  0.5810267814334081
 '''
