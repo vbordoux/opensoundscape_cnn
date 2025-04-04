@@ -5,7 +5,6 @@ import numpy as np
 import torch
 import random
 import wandb
-import sklearn.model_selection
 from opensoundscape import CNN
 from opensoundscape.data_selection import resample
 from opensoundscape.preprocess.utils import show_tensor_grid
@@ -144,8 +143,15 @@ if __name__ == "__main__":
     samples_dir = '/home/reindert/Valentin_REVO/surfperch_toshare/eval_texel Outputs/september 2024/surfperch/labeled_outputs/'
     test_files_path = '/home/reindert/Valentin_REVO/surfperch_toshare/eval_texel Data/september 2024/test_set/'
     
+    # WANDB
     activate_wandb = False
     wandb_exp_name = 'No augment no upsampling 030425'
+
+    # RUN PARAMS
+    nbr_epochs = 50
+    batch_size = 8
+    num_workers = 16
+
 
     if activate_wandb:
         try:
@@ -214,9 +220,9 @@ if __name__ == "__main__":
         model.train(
             train_df,
             valid_df,
-            epochs=50,
-            batch_size=8,
-            num_workers=16,
+            epochs=nbr_epochs,
+            batch_size=batch_size,
+            num_workers=num_workers,
             wandb_session=wandb_session,
             save_interval=5,  
             save_path=checkpoint_folder,  
@@ -224,8 +230,8 @@ if __name__ == "__main__":
         )
 
         # Run predictions on the validation set and on the test set
-        predict_validset = model.predict(valid_df, batch_size=8, num_workers=16, activation_layer='sigmoid', wandb_session=wandb_session)
-        pred_testset = model.predict(test_set_df, batch_size=8, num_workers=16, activation_layer='sigmoid', wandb_session=wandb_session)
+        predict_validset = model.predict(valid_df, batch_size=batch_size, num_workers=num_workers, activation_layer='sigmoid', wandb_session=wandb_session)
+        pred_testset = model.predict(test_set_df, batch_size=batch_size, num_workers=num_workers, activation_layer='sigmoid', wandb_session=wandb_session)
 
         # Compute metrics
         prec_valid, recall_valid, f1_valid, auc_roc_valid, auc_pr_valid = compute_metrics(valid_df, predict_validset, fish_sound)
@@ -275,6 +281,10 @@ if __name__ == "__main__":
                             'f1_test': [metrics[2] for metrics in testset_metrics_dic.values()],
                             'auc_roc_test': [metrics[3] for metrics in testset_metrics_dic.values()],
                             'auc_pr_test': [metrics[4] for metrics in testset_metrics_dic.values()]})
+    
+    # create results dir
+    Path("./results").mkdir(parents=True, exist_ok=True)
+    metrics_df.to_csv(f"./results/{experiment_name}_metrics.csv", index=False)
     
     # Finish the session before next run
     if activate_wandb:

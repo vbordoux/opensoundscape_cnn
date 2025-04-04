@@ -3,3 +3,4 @@ model_training_checkpoints/
 wandb/
 train_set_baseline.csv
 requirements.txt
+results/

@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "opensoundscape_cnn"
+version = "0.1.0"
+description = ""
+authors = ["Valentin Bordoux"]
+license = "Apache 2.0poewtr"
+package-mode = false
+
+[tool.poetry.dependencies]
+# These dependencies are part of the implicit 'main' group, meaning
+# they will be installed when using `pip install`.
+# Other dependency groups will not be installed by pip, however.
+# See: https://python-poetry.org/docs/managing-dependencies/#dependency-groups
+python = ">=3.10,<3.12"
+opensoundscape = "0.12.0"
+
+[build-system]
+requires = ["poetry-core>=1.5.0"]
+build-backend = "poetry.core.masonry.api"
