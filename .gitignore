@@ -4,3 +4,4 @@ wandb/
 train_set_baseline.csv
 requirements.txt
 results/
+.idea/
