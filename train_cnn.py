@@ -168,7 +168,7 @@ if __name__ == "__main__":
 
     # WANDB
     activate_wandb = False
-    wandb_exp_name = 'No augment no upsampling 030425'
+    wandb_exp_name = 'No augment no upsampling 040425'
 
     # RUN PARAMS
     nbr_epochs = 50
@@ -335,6 +335,7 @@ if __name__ == "__main__":
 
 # Perf on last run
 '''
+Full training model
 Precision valid:  0.9046428571428571
 Recall valid:  0.8933333333333333
 F1 valid:  0.8983759733036708
@@ -348,7 +349,7 @@ F1 test:  0.38541352754615216
 AUC ROC test:  0.9218473193473194
 AUC precision recall:  0.5563509980096927
 
-
+Loading best model
 Validation Set
 Precision valid:  0.913809523809524
 Recall valid:  0.8400000000000001
