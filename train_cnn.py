@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import random
 import wandb
-from opensoundscape import CNN
+from opensoundscape import CNN, SpectrogramPreprocessor
 from opensoundscape.data_selection import resample
 from opensoundscape.preprocess.utils import show_tensor_grid
 from opensoundscape import AudioFileDataset
@@ -14,6 +14,7 @@ from sklearn.metrics import roc_auc_score, f1_score, precision_score, recall_sco
 from sklearn.model_selection import StratifiedKFold
 import tensorflow as tf #TF needed to import pickle
 import gc
+import matplotlib.pyplot as plt
 
 def create_train_valid_set(experiment_name, samples_dir, fish_sound, fish_sound_folder, window_len_s):
     
@@ -92,9 +93,9 @@ def load_test_set(test_set_path, test_files_path, fish_sound):
     test_set_df = pd.read_pickle(os.path.join(test_set_path, 'test_set.pkl'))
     
     # Modify the format of the pickle to be compatible with opensoundscape
+    test_set_df[fish_sound] = (test_set_df['Label'] == fish_sound)
     test_set_df = test_set_df.drop(columns=['Label', 'Embedding'])
-    test_set_df = test_set_df.rename(columns={'label_int': fish_sound, 'Starttime': 'start_time', 'Endtime': 'end_time', 'filename': 'file'})
-    test_set_df[fish_sound] = test_set_df[fish_sound].astype(bool)
+    test_set_df = test_set_df.rename(columns={'Starttime': 'start_time', 'Endtime': 'end_time', 'filename': 'file'})
     test_set_df['file'] = test_files_path + test_set_df['file']
     test_set_df = test_set_df.set_index(['file', 'start_time', 'end_time'])
 
@@ -102,31 +103,35 @@ def load_test_set(test_set_path, test_files_path, fish_sound):
 
 
 
-def setup_model(model, sample_rate):
-    # all data augmentations
-    model.preprocessor.pipeline.random_trim_audio.bypass = True
+def setup_preprocessor(sample_rate, window_len):
+    preprocessor = SpectrogramPreprocessor(window_len)
 
-    model.preprocessor.pipeline.overlay.bypass = True
-    # model.preprocessor.pipeline.overlay.overlay_df = (train_df.astype(int))
-    # model.preprocessor.pipeline.overlay.set(overlay_class='A')
-
-    model.preprocessor.pipeline.time_mask.bypass = True
-    model.preprocessor.pipeline.time_mask.set(max_masks=2, max_width=0.1)
-
-    model.preprocessor.pipeline.frequency_mask.bypass = True
-    model.preprocessor.pipeline.frequency_mask.set(max_masks=2, max_width=0.1)
-
-    model.preprocessor.pipeline.add_noise.bypass = True
-    model.preprocessor.pipeline.random_affine.bypass = True
-
-    model.preprocessor.pipeline.bandpass.set(min_f=50, max_f=2000)
-
-    model.preprocessor.pipeline.to_spec.set(window_samples = 4 * (sample_rate // 100),
+# Preprocessing
+    preprocessor.pipeline.load_audio.set(sample_rate=sample_rate)
+    preprocessor.pipeline.bandpass.set(min_f=50, max_f=2000)
+    preprocessor.pipeline.to_spec.set(window_samples = 4 * (sample_rate // 100),
                                             # overlap_samples = None,
                                             # fft_size = None,
                                             # dB_scale = True,
                                             # scaling = 'spectrum'
                                             )
+
+    # Augmentations
+    preprocessor.pipeline.random_trim_audio.bypass = True
+    preprocessor.pipeline.overlay.bypass = True
+    # model.preprocessor.pipeline.overlay.overlay_df = (train_df.astype(int))
+    model.preprocessor.pipeline.overlay.set(overlay_class=fish_sound)
+
+    preprocessor.pipeline.time_mask.bypass = True
+    preprocessor.pipeline.time_mask.set(max_masks=2, max_width=0.1)
+
+    preprocessor.pipeline.frequency_mask.bypass = True
+    preprocessor.pipeline.frequency_mask.set(max_masks=2, max_width=0.1)
+
+    preprocessor.pipeline.add_noise.bypass = True
+    preprocessor.pipeline.random_affine.bypass = True
+    
+    return preprocessor
 
 
 
@@ -157,8 +162,8 @@ if __name__ == "__main__":
 
     # Hard coded params for now - If properly given here, the rest of the code should run
     # TODO get them from the dict config eventually
-    fish_sound = 'A'
-    fish_sound_folder = 'fishA'
+    fish_sound = 'downsweep'
+    fish_sound_folder = fish_sound
     window_len_s = 5.0
     sample_rate = 32000
     experiment_name = 'texel_baseline_20250331'
@@ -166,28 +171,11 @@ if __name__ == "__main__":
     testset_files_dir = '/home/reindert/Valentin_REVO/surfperch_toshare/eval_texel Data/september 2024/test_set/'
     testset_pickle_dir = '/home/reindert/Valentin_REVO/surfperch_toshare/eval_texel Outputs/september 2024/surfperch/test_set/'
 
-    # WANDB
-    activate_wandb = False
-    wandb_exp_name = 'No augment no upsampling 030425'
-
     # RUN PARAMS
-    nbr_epochs = 50
+    nbr_epochs = 30
     batch_size = 8
     num_workers = 8
 
-    if activate_wandb:
-        try:
-            wandb.login()
-            wandb_session = wandb.init(
-                entity="revo2023",
-                project="Agile Modeling and Opensoundscape",
-                name=wandb_exp_name,
-            )
-        except:  
-            print("failed to create wandb session. wandb session will be None")
-            wandb_session = None
-    else: 
-        wandb_session = None
 
     # NOT USED anymore - Create test set with opensoundscape - can be used to compare perf of both test set
     # test_set_df = create_test_set_with_opensoundscape(testset_files_dir, fish_sound)
@@ -211,18 +199,20 @@ if __name__ == "__main__":
         train_df, valid_df = df_trainset.iloc[train_index], df_trainset.iloc[valid_index]
 
         # upsample (repeat samples) so that all classes have 200 samples
-        # augmented_train_df = resample(train_df, n_samples_per_class=200, n_samples_without_labels=200, random_state=0)
+        # train_df = resample(train_df, n_samples_per_class=500, n_samples_without_labels=500, random_state=0)
 
         # We use Resnet as most common architeture used in Bioacoustics (ref: Stowell 2022)
         # Resnet 18 because how dataset is small (avoid overfitting)
-        architecture = 'resnet18' 
+        architecture = 'efficientnet_b0' 
         class_list = [fish_sound]
         model = CNN(architecture=architecture,
                     classes=class_list,
                     sample_duration=5.0)
         # print(f"model.device is {model.device}")
 
-        setup_model(model, sample_rate)
+        preprocessor = setup_preprocessor(sample_rate, window_len=window_len_s)
+        model.preprocessor = preprocessor
+        print(model.preprocessor.pipeline)
 
         # TODO - Fix overlay
         # neg_train_df = train_df[train_df[fish_sound] == 0]
@@ -245,9 +235,8 @@ if __name__ == "__main__":
             epochs=nbr_epochs,
             batch_size=batch_size,
             num_workers=num_workers,
-            wandb_session=wandb_session,
             progress_bar=True,
-            save_interval=5,  # save checkpoint every 10 epochs
+            save_interval=10,  # save checkpoint every 10 epochs
             save_path=checkpoint_folder,  # location to save checkpoints
         )
 
@@ -259,14 +248,12 @@ if __name__ == "__main__":
                                         batch_size=batch_size, 
                                         num_workers=num_workers, 
                                         activation_layer='sigmoid', 
-                                        wandb_session=wandb_session,
                                         progress_bar=False)
         
         pred_testset = model.predict(test_set_df, 
                                      batch_size=batch_size, 
                                      num_workers=num_workers, 
-                                     activation_layer='sigmoid', 
-                                     wandb_session=wandb_session)
+                                     activation_layer='sigmoid')
 
         # Compute metrics
         prec_valid, recall_valid, f1_valid, auc_roc_valid, auc_pr_valid = compute_metrics(valid_df, predict_validset, fish_sound)
@@ -328,38 +315,41 @@ if __name__ == "__main__":
     metrics_df.to_csv(f"./results/{experiment_name}_metrics.csv", index=False)
     print(f"Results saved in ./results/{experiment_name}_metrics.csv")
     
-    # Finish the session before next run
-    if activate_wandb:
-        wandb.finish()
+    # Make a boxplot of the test set metrics
+    metrics_df.boxplot(column=['precision_test', 'recall_test', 'f1_test', 'auc_roc_test', 'auc_pr_test'], grid=False)
+    plt.show()
 
 
 # Perf on last run
 '''
-Precision valid:  0.9046428571428571
-Recall valid:  0.8933333333333333
-F1 valid:  0.8983759733036708
-AUC ROC valid:  0.9600000000000002
-AUC precision recall:  0.96385885468161
-
-Test Set
-Precision test:  0.27824239520204075
-Recall test:  0.7208333333333333
-F1 test:  0.38541352754615216
-AUC ROC test:  0.9218473193473194
-AUC precision recall:  0.5563509980096927
-
-
+EfficientNetB0
+300 samples
 Validation Set
-Precision valid:  0.913809523809524
-Recall valid:  0.8400000000000001
-F1 valid:  0.8742273307790549
-AUC ROC valid:  0.9546666666666667
-AUC precision recall:  0.9563074305868422
+Precision valid:  0.9240410429404736
+Recall valid:  0.9400000000000001
+F1 valid:  0.9307006758700028
+AUC ROC valid:  0.984
+AUC precision recall:  0.9857266953902144
 
 Test Set
-Precision test:  0.336829340026271
-Recall test:  0.6833333333333333
-F1 test:  0.4403030066859854
-AUC ROC test:  0.9174854312354311
-AUC precision recall:  0.5810267814334081
-'''
+Precision test:  0.2922365002398418
+Recall test:  0.8127659574468085
+F1 test:  0.42557797442412826
+AUC ROC test:  0.9771301142229774
+AUC precision recall:  0.7356546154430736
+
+ResNet18
+Validation Set
+Precision valid:  0.9585714285714285
+Recall valid:  0.86
+F1 valid:  0.9033265720081136
+AUC ROC valid:  0.9634444444444444
+AUC precision recall:  0.961813243447137
+
+Test Set
+Precision test:  0.4101967704396653
+Recall test:  0.7063829787234042
+F1 test:  0.5029801848480646
+AUC ROC test:  0.9379726686045992
+AUC precision recall:  0.6874709324402516
+''' 
