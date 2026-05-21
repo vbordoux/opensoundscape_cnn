@@ -19,7 +19,7 @@ from opensoundscape.spectrogram import Spectrogram
 from opensoundscape.preprocess.actions import ACTION_FN_DICT
 import math
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+# os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
 def create_train_valid_set(experiment_name, samples_dir, fish_sound, fish_sound_folder, window_len_s):
     
@@ -97,9 +97,13 @@ def load_test_set(test_set_path, test_files_path, fish_sound):
     # tensorflow is needed to import the pickle because it contains tensors
     test_set_df = pd.read_pickle(os.path.join(test_set_path, 'test_set.pkl'))
     
+    # First drop embeddings
+    test_set_df = test_set_df.drop(columns=['Embedding'])
+
     # Modify the format of the pickle to be compatible with opensoundscape
     test_set_df[fish_sound] = (test_set_df['Label'] == fish_sound)
-    test_set_df = test_set_df.drop(columns=['Label', 'Embedding'])
+    test_set_df = test_set_df.drop(columns=['Label'])
+
     test_set_df = test_set_df.rename(columns={'Starttime': 'start_time', 'Endtime': 'end_time', 'filename': 'file'})
     test_set_df['file'] = test_files_path + test_set_df['file']
     test_set_df = test_set_df.set_index(['file', 'start_time', 'end_time'])
@@ -175,7 +179,9 @@ def setup_preprocessor(sample_rate, window_len):
     preprocessor.pipeline.overlay.bypass = True
     preprocessor.pipeline.time_mask.bypass = True
     preprocessor.pipeline.frequency_mask.bypass = True
-    preprocessor.pipeline.bypass_augmentations = True
+    preprocessor.pipeline.adaptive_random_gain.bypass = True
+    preprocessor.pipeline.adaptive_random_noise.bypass = True
+    preprocessor.pipeline.random_wrap.bypass = True
 
     # # Augmentations
     # preprocessor.pipeline.random_trim_audio.bypass = True
@@ -220,17 +226,27 @@ if __name__ == "__main__":
 
     # Hard coded params for now - If properly given here, the rest of the code should run
     # TODO get them from the dict config eventually
-    fish_sound = 'Jackhammer'
+    # fish_sound = 'Jackhammer'
+    # fish_sound_folder = fish_sound
+    # window_len_s = 5.0
+    # sample_rate = 32000
+    # experiment_name = 'jackhammer_surfperch_hockey_11_20250326'
+    # samples_dir = '/home/reindert/Valentin_REVO/experiments_paper_only/output/grafton_deployment/surfperch/labeled_outputs/'
+    # testset_files_dir = '/home/reindert/Valentin_REVO/experiments_paper_only/dataset/grafton_deployment/test_set/'
+    # testset_pickle_dir = '/home/reindert/Valentin_REVO/experiments_paper_only/output/grafton_deployment/surfperch/test_set/'
+
+    fish_sound = 'downsweep'
     fish_sound_folder = fish_sound
     window_len_s = 5.0
     sample_rate = 32000
-    experiment_name = 'jackhammer_surfperch_hockey_11_20250326'
-    samples_dir = '/home/reindert/Valentin_REVO/experiments_paper_only/output/grafton_deployment/surfperch/labeled_outputs/'
-    testset_files_dir = '/home/reindert/Valentin_REVO/experiments_paper_only/dataset/grafton_deployment/test_set/'
-    testset_pickle_dir = '/home/reindert/Valentin_REVO/experiments_paper_only/output/grafton_deployment/surfperch/test_set/'
+    experiment_name = 'texel_baseline_20250331'
+    samples_dir = '/home/reindert/Valentin_REVO/surfperch_toshare/eval_texel Outputs/september 2024/surfperch/labeled_outputs/'
+    testset_files_dir = '/home/reindert/Valentin_REVO/surfperch_toshare/eval_texel Data/september 2024/test_set/'
+    testset_pickle_dir = '/home/reindert/Valentin_REVO/surfperch_toshare/eval_texel Outputs/september 2024/surfperch/test_set/'
+
 
     # RUN PARAMS
-    nbr_epochs = 1
+    nbr_epochs = 128
     batch_size = 12
     num_workers = 20
 
@@ -242,12 +258,12 @@ if __name__ == "__main__":
     test_set_df = load_test_set(testset_pickle_dir, testset_files_dir, fish_sound)
 
     # Create the 5-fold training and validation sets
-    kf = StratifiedKFold(n_splits=2, shuffle=True, random_state=seed)
+    kf = StratifiedKFold(n_splits=5, shuffle=True, random_state=seed)
     df_trainset = create_train_valid_set(experiment_name, samples_dir, fish_sound, fish_sound_folder, window_len_s)
     validation_metrics_dic = {}
     testset_metrics_dic = {}
 
-    breakpoint()
+    # breakpoint()
 
     # Iterate over the folds
     for i, (train_index, valid_index) in enumerate(kf.split(df_trainset, df_trainset[fish_sound])):
@@ -280,15 +296,14 @@ if __name__ == "__main__":
         print(model.optimizer_params)
 
         # Display samples
-        dataset = AudioFileDataset(train_df, model.preprocessor)
-        tensors = [dataset[i].data for i in range(9)]
-        sample_labels = [list(dataset[i].labels[dataset[i].labels > 0].index) for i in range(9)]
-        _ = show_tensor_grid(tensors, 3, labels=sample_labels)
+        # dataset = AudioFileDataset(train_df, model.preprocessor)
+        # tensors = [dataset[i].data for i in range(9)]
+        # sample_labels = [list(dataset[i].labels[dataset[i].labels > 0].index) for i in range(9)]
+        # _ = show_tensor_grid(tensors, 3, labels=sample_labels)
 
         checkpoint_folder = Path("model_training_checkpoints")
         checkpoint_folder.mkdir(exist_ok=True)
 
-        break
 
         steps_per_epoch = math.ceil(len(train_df) / batch_size)
         nbr_steps = steps_per_epoch * nbr_epochs
@@ -403,5 +418,17 @@ AUC ROC test:  0.94016846327102
 AUC precision recall:  0.6889680280556431
 
 BPNS
+Validation Set
+Precision valid:  0.9154160654160653
+Recall valid:  0.9133333333333333
+F1 valid:  0.9112923374266387
+AUC ROC valid:  0.9772222222222222
+AUC precision recall:  0.9797900039815197
 
+Test Set
+Precision test:  0.19879453541769868
+Recall test:  1.0
+F1 test:  0.3303786921374322
+AUC ROC test:  0.9997169725189445
+AUC precision recall:  0.8985410998866794
 ''' 
